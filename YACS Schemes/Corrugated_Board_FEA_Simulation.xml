@@ -1,0 +1,1529 @@
+<?xml version='1.0' encoding='iso-8859-1' ?>
+<proc name="Corrugated_Board_FEA_simulation">
+   <type name="string" kind="string"/>
+   <struct name="Engines/dataref">
+      <member name="ref" type="string"/>
+   </struct>
+   <type name="bool" kind="bool"/>
+   <sequence name="boolvec" content="bool"/>
+   <type name="double" kind="double"/>
+   <sequence name="dblevec" content="double"/>
+   <objref name="file" id="file"/>
+   <type name="int" kind="int"/>
+   <sequence name="intvec" content="int"/>
+   <struct name="stringpair">
+      <member name="name" type="string"/>
+      <member name="value" type="string"/>
+   </struct>
+   <sequence name="propvec" content="stringpair"/>
+   <objref name="pyobj" id="python:obj:1.0"/>
+   <sequence name="seqboolvec" content="boolvec"/>
+   <sequence name="seqdblevec" content="dblevec"/>
+   <sequence name="seqintvec" content="intvec"/>
+   <sequence name="seqpyobj" content="pyobj"/>
+   <sequence name="stringvec" content="string"/>
+   <sequence name="seqstringvec" content="stringvec"/>
+   <container name="DefaultContainer">
+      <property name="container_kind" value="Salome"/>
+      <property name="attached_on_cloning" value="0"/>
+      <property name="container_name" value="FactoryServer"/>
+      <property name="name" value="localhost"/>
+   </container>
+   <datanode name="Geometry_and_mesh_parameters">
+      <parameter name="path_to_dir" type="string">
+         <value><string>/home/user/yacs_test_10</string></value>
+      </parameter>
+      <parameter name="control_points" type="pyobj">
+         <value><objref><![CDATA[31MC13.IBUuAI=Em117EAUkmI0sCH304346AR6kQI46AR.kAf3.i1glEVVFW15GgI18AAZ.i1WlEVVFW15EQH3=W15EA18lE9UugI6MIAckmI16AAZ.i1alEVcNo]]></objref></value>
+      </parameter>
+      <parameter name="weights" type="pyobj">
+         <value><objref><![CDATA[31MC13.IBUuAI18AAZ04AckmI6MmX17EVX8AAZ04AckmI6O4R5]]></objref></value>
+      </parameter>
+      <parameter name="amplitude" type="double">
+         <value><double>5</double></value>
+      </parameter>
+      <parameter name="n_flutes_y" type="int">
+         <value><int>2</int></value>
+      </parameter>
+      <parameter name="flute_thickness" type="double">
+         <value><double>0.2</double></value>
+      </parameter>
+      <parameter name="liner_thickness" type="double">
+         <value><double>0.2</double></value>
+      </parameter>
+      <parameter name="alu_block_thickness" type="double">
+         <value><double>1</double></value>
+      </parameter>
+   </datanode>
+   <inline name="Data_Check">
+      <script><code><![CDATA[n_iterations = len(control_points)
+
+data_check = 'Checking the data'
+
+#check if the list of control points and the list of weights
+if len(control_points) != len(weights):
+    raise Exception ('The number of elements in control points and the number of elements in the weights is not equal')
+
+
+for i in range (0,n_iterations):
+    if len(control_points[i]) == len(weights[i]):
+        data_check = 'Everything looks good'
+    else:
+        data_check = 'Problem with control points and weights'
+        raise Exception('The number of elements in the list for control points and weights does not match at location ',i)
+        
+]]></code></script>
+      <load container="DefaultContainer"/>
+      <inport name="path_to_dir" type="string"/>
+      <inport name="control_points" type="pyobj"/>
+      <inport name="weights" type="pyobj"/>
+      <inport name="amplitude" type="double"/>
+      <inport name="n_flutes_y" type="int"/>
+      <inport name="flute_thickness" type="double"/>
+      <inport name="liner_thickness" type="double"/>
+      <inport name="alu_block_thickness" type="double"/>
+      <outport name="n_iterations" type="int"/>
+      <outport name="data_check" type="string"/>
+   </inline>
+   <forloop name="Study_Iteration">
+      <inline name="Simulation_Run">
+         <script><code><![CDATA[# Python script to create the geometry and the mesh for any shape of the flute with NURB curves, given the control points and the weights associated with it
+# Created on 09.09.2024 at Papierfabrikation, TU Darmstadt, akram.metar@stud.tu-darmstadt.de
+
+
+# ========================================================
+# ======== Geometry parameterisation =====================
+# ========================================================
+
+#control points
+control_points = control_points_list[index]
+weights = weights_list[index]
+
+
+#degree of the NURB curve
+degree = 3
+
+# ========================================================
+# ======== Mesh parameterisation =========================
+# ========================================================
+max_curvature_element_size = flute_thickness/6.0
+min_curvature_element_size = flute_thickness/2.0
+average_element_size = (max_curvature_element_size+min_curvature_element_size)/2.0
+min_element_size = flute_thickness/2.0
+max_element_size = flute_thickness
+
+
+# for the liner, also making sure that there is atleast one node common to both the flute ans the liner
+n_elements_thickness = 2
+
+
+
+# Defination of functions necessary for the development of the nurb curve
+#------------------------------------------------------------------------------------------------------------------
+import os
+import numpy as np
+# Cox-de Boor recursion formula to compute basis functions
+def N(i, p, u, knot_vector):
+    if p == 0:
+        return 1.0 if knot_vector[i] <= u < knot_vector[i + 1] else 0.0
+    else:
+        term1 = 0.0
+        term2 = 0.0
+
+        if knot_vector[i + p] != knot_vector[i]:
+            term1 = ((u - knot_vector[i]) / (knot_vector[i + p] - knot_vector[i])) * N(i, p - 1, u, knot_vector)
+        
+        if knot_vector[i + p + 1] != knot_vector[i + 1]:
+            term2 = ((knot_vector[i + p + 1] - u) / (knot_vector[i + p + 1] - knot_vector[i + 1])) * N(i + 1, p - 1, u, knot_vector)
+
+        return term1 + term2
+
+# Function to compute the NURBS curve at a given parameter u
+def nurbs_curve(u, control_points, weights, degree, knot_vector):
+    n = len(control_points) - 1  # number of control points
+    weighted_sum = np.zeros(len(control_points[0]))  # assuming 2D or 3D points
+    basis_weight_sum = 0.0
+
+    for i in range(n + 1):
+        Ni = N(i, degree, u, knot_vector)
+        weighted_sum += Ni * weights[i] * np.array(control_points[i])
+        basis_weight_sum += Ni * weights[i]
+
+    if basis_weight_sum != 0:
+        return weighted_sum / basis_weight_sum
+    else:
+        return np.zeros(len(control_points[0]))
+
+# Function to generate a valid knot vector
+def generate_knot_vector(degree, num_control_points):
+    n = num_control_points - 1
+    m = n + degree + 2  # Total number of knots is n + degree + 2
+    knot_vector = [0] * (degree + 1)  # p+1 zeros at the start
+
+    # Evenly spaced knots in the middle
+    num_middle_knots = m - 2 * (degree + 1)
+    if num_middle_knots > 0:
+        middle_knots = np.linspace(1, num_middle_knots, num_middle_knots) / (num_middle_knots + 1)
+        knot_vector += middle_knots.tolist()
+
+    knot_vector += [1] * (degree + 1)  # p+1 ones at the end
+    return knot_vector
+
+# Generate NURBS curve points
+def generate_nurbs_spline(control_points, weights, degree, num_points=121):
+    # Generate knot vector automatically
+    knot_vector = generate_knot_vector(degree, len(control_points))
+    
+    # Generate parameter values u
+    u_vals = np.linspace(knot_vector[degree], knot_vector[-degree-1], num_points)
+    
+    # Calculate curve points
+    curve_points = [nurbs_curve(u, control_points, weights, degree, knot_vector) for u in u_vals]
+    return np.array(curve_points)
+
+
+
+# Generate NURBS spline points and raise error if the number of control points and the number of weights are not same
+nurbs_points = generate_nurbs_spline(control_points, weights, degree)
+if len(control_points) != len(weights):
+    raise Exception('The length of the control points and the weights is not same')
+
+
+
+# create the data points for the plotting the curves in matplotlib
+control_points_x_cordinates, control_points_y_cordinates = zip(*control_points)
+
+x_cordinates , y_cordinates = zip(*nurbs_points)
+
+x_cordinates = list(x_cordinates)
+y_cordinates = list(y_cordinates)
+
+# to change the last value of the curve to the last point in the control points list
+x_cordinates[-1] = control_points_x_cordinates[-1]
+y_cordinates[-1] = control_points_y_cordinates[-1]
+
+
+
+#----------------------------------------------
+#----------------------------------------------
+
+# Importing important modules for calculations
+from math import sin,radians,floor,ceil,sqrt,atan2,cos
+import numpy as np
+
+
+
+
+# creating the original values for x and y cordinates
+x_cordinates = np.array(x_cordinates)*(amplitude/np.max(y_cordinates))
+y_cordinates = np.array(y_cordinates)*(amplitude/np.max(y_cordinates))
+n_data_points = len(x_cordinates)
+wavelength = x_cordinates[-1]
+
+one_elem_length = x_cordinates[-1]*amplitude*n_flutes_y
+#n_elements_load_line = int(one_elem_length/(liner_thickness/n_elements_thickness))
+n_elements_load_line = 100
+# creating the list for new x_cordinates and y_cordinates (offset from the original one)
+new_x_cordinates = []
+new_y_cordinates = []
+
+def calculate_offset_curve(x, y, offset_distance):
+    # Calculate tangents (difference between consecutive points)
+    dx = np.diff(x)
+    dy = np.diff(y)
+    
+    # Calculate normals by rotating tangents 90 degrees
+    normal_x = -dy
+    normal_y = dx
+    
+    # Calculate magnitude of normal vectors
+    norm = np.sqrt(normal_x**2 + normal_y**2)
+    
+    # Normalize the normal vectors
+    normal_x /= norm
+    normal_y /= norm
+    
+    # Calculate offset points by moving along the normal vector
+    offset_x = x[:-1] + offset_distance * normal_x
+    offset_y = y[:-1] + offset_distance * normal_y
+    
+    
+    return offset_x, offset_y
+
+offset_x, offset_y = calculate_offset_curve(x_cordinates, y_cordinates, flute_thickness)
+
+
+negative_count = []
+positive_count = 0
+for count,value in enumerate(offset_x):
+    if value < 0 :
+        negative_count.append(count)
+    elif value > x_cordinates[-1]:
+        if positive_count == 0 :
+            positive_count = positive_count+1
+        else:
+            negative_count.append(count)
+    else:
+        pass
+
+offset_x = np.delete(offset_x,negative_count)
+offset_y = np.delete(offset_y,negative_count)
+offset_x[0] = 0.0
+offset_x[-1] = x_cordinates[-1]  
+
+A1 = (np.pi/2)-(np.arctan2(y_cordinates[1],x_cordinates[1]))
+offset_y[0] = flute_thickness/(np.sin(A1))
+
+
+offset_y[-1] = y_cordinates[-1]+(offset_y[0]-y_cordinates[0])
+
+new_x_cordinates = offset_x
+new_y_cordinates = offset_y
+
+flute_amplitude = max(new_y_cordinates)
+
+
+
+
+import sys
+import salome
+salome.salome_init()
+import salome_notebook
+notebook = salome_notebook.NoteBook()
+
+#=======================================================================
+#============ Geometry module ==========================================
+#=======================================================================
+
+import GEOM
+from salome.geom import geomBuilder
+import math
+import SALOMEDS
+
+geompy = geomBuilder.New()
+O = geompy.MakeVertex(0, 0, 0)
+OX = geompy.MakeVectorDXDYDZ(1, 0, 0)
+OY = geompy.MakeVectorDXDYDZ(0, 1, 0)
+OZ = geompy.MakeVectorDXDYDZ(0, 0, 1)
+geompy.addToStudy( O, 'O' )
+geompy.addToStudy( OX, 'OX' )
+geompy.addToStudy( OY, 'OY' )
+geompy.addToStudy( OZ, 'OZ' )
+
+
+# creating the the points for the flute geometry from x and y_cordinate lists
+for count,value in enumerate (x_cordinates):
+    globals()[f'Vertex_{int(count+1)}'] = geompy.MakeVertex(x_cordinates[count],y_cordinates[count],0.0)
+    #geompy.addToStudy(globals()[f'Vertex_{int(count+1)}'],'Vertex_'+str(count+1))
+
+# create the control points and add them to the study
+for count,value in enumerate (control_points_x_cordinates):
+    globals()[f'Control_Point_{int(count+1)}'] = geompy.MakeVertex(control_points_x_cordinates[count]*amplitude,control_points_y_cordinates[count]*amplitude,0.0)
+    geompy.addToStudy(globals()[f'Control_Point_{int(count+1)}'],'Control_Point_'+str(count+1))
+
+# creating the lines and joining them
+all_lines = []
+for count in range(1,len(x_cordinates)):
+    globals()[f'Line_{int(count)}'] = geompy.MakeLineTwoPnt(globals()[f'Vertex_{int(count)}'],globals()[f'Vertex_{int(count+1)}'])
+    #geompy.addToStudy(globals()[f'Line_{int(count)}'],'Line_'+str(count))
+    all_lines.append(globals()[f'Line_{int(count)}'])
+
+# Making the Fuse of all the lines
+Single_flute_line = geompy.MakeFuseList(all_lines,True,True)
+geompy.addToStudy(Single_flute_line,'Single_flute_line')
+
+
+# creating the points for the top lines
+for count,value in enumerate (new_x_cordinates):
+    globals()[f't_Vertex_{int(count+1)}'] = geompy.MakeVertex(new_x_cordinates[count],new_y_cordinates[count],0.0)
+    #geompy.addToStudy(globals()[f't_Vertex_{int(count+1)}'],'t_Vertex_'+str(count+1))
+
+# creating the lines and joining them
+all_lines_top = []
+for count in range(1,len(new_x_cordinates)):
+    globals()[f't_Line_{int(count)}'] = geompy.MakeLineTwoPnt(globals()[f't_Vertex_{int(count)}'],globals()[f't_Vertex_{int(count+1)}'])
+    #geompy.addToStudy(globals()[f't_Line_{int(count)}'],'t_Line_'+str(count))
+    all_lines_top.append(globals()[f't_Line_{int(count)}'])
+
+# Making the Fuse of all the lines
+Single_flute_line_top = geompy.MakeFuseList(all_lines_top,True,True)
+geompy.addToStudy(Single_flute_line_top,'Single_flute_line_top')
+
+# Creating the flute
+Flute_lines =  geompy.MakeFuseList([Single_flute_line,Single_flute_line_top],True,True)
+flute_line_ext = geompy.MakeMultiTranslation1D(Flute_lines, None, wavelength, n_flutes_y)
+Join_line_1 = geompy.MakeLineTwoPnt(globals()[f'Vertex_{int(1)}'],globals()[f't_Vertex_{int(1)}'])
+Join_lines = geompy.MakeMultiTranslation1D(Join_line_1, None, n_flutes_y*wavelength, 2)
+geompy.addToStudy(Join_lines,'Join_lines')
+geompy.addToStudy(flute_line_ext,'Flute_line_ext')
+flute = geompy.MakeFaceWires([flute_line_ext,Join_lines], 1)
+geompy.addToStudy(flute,'flute')
+
+
+# creating the groups for the flute for top contact analysis
+full_top_contact_1 =  geompy.MakeMultiTranslation1D(Single_flute_line_top, None, wavelength, n_flutes_y)
+full_top_contact_obj = geompy.GetInPlace(flute,full_top_contact_1,True)
+full_top_contact = geompy.CreateGroup(flute, geompy.ShapeType["EDGE"])
+geompy.UnionList(full_top_contact,[full_top_contact_obj])
+geompy.addToStudyInFather(flute,full_top_contact,'full_top_contact')
+
+
+
+
+# creating the groups for the bottom contact analysis
+full_bottom_contact_1 = geompy.MakeMultiTranslation1D(Single_flute_line, None, wavelength, n_flutes_y)
+full_bottom_contact_obj = geompy.GetInPlace(flute,full_bottom_contact_1,True)
+full_bottom_contact = geompy.CreateGroup(flute, geompy.ShapeType["EDGE"])
+geompy.UnionList(full_bottom_contact,[full_bottom_contact_obj])
+geompy.addToStudyInFather(flute,full_bottom_contact,'full_bottom_contact')
+
+
+# creating the group of edges for the extreme side edges
+# creating the geometry for the fixed_edges
+extrm_side_edges_obj = geompy.GetInPlace(flute,Join_lines,True)
+extrm_side_edges = geompy.CreateGroup(flute, geompy.ShapeType["EDGE"])
+geompy.UnionList(extrm_side_edges,[extrm_side_edges_obj])
+geompy.addToStudyInFather(flute,extrm_side_edges,'extrm_side_edges')
+
+
+# create the group for the flutes
+flute_all_obj = geompy.GetInPlace(flute,flute,True)
+flute_all = geompy.CreateGroup(flute, geompy.ShapeType["FACE"])
+geompy.UnionList(flute_all,[flute_all_obj])
+geompy.addToStudyInFather(flute,flute_all,'flute_all')
+
+
+
+
+
+
+# getting the maximum amplitude from the y_cordinate list
+single_rect_height = flute_amplitude/5.0
+
+# Creating the areas where the mesh would be really fine
+rect_1_point_1 = geompy.MakeVertex(0, 0.0,0.0 )
+rect_1_point_2 = geompy.MakeVertex(wavelength*n_flutes_y, 0.0, 0.0 )
+rect_1_point_3 = geompy.MakeVertex(wavelength*n_flutes_y,single_rect_height, 0.0)
+rect_1_point_4 = geompy.MakeVertex(0, single_rect_height, 0.0 )
+
+rect_1_line_1 = geompy.MakeLineTwoPnt(rect_1_point_1,rect_1_point_2)
+rect_1_line_2 = geompy.MakeLineTwoPnt(rect_1_point_2,rect_1_point_3)
+rect_1_line_3 = geompy.MakeLineTwoPnt(rect_1_point_3,rect_1_point_4)
+rect_1_line_4 = geompy.MakeLineTwoPnt(rect_1_point_4,rect_1_point_1)
+
+rect_1 = geompy.MakeFaceWires([rect_1_line_1,rect_1_line_2,rect_1_line_3,rect_1_line_4],1)
+geompy.addToStudy(rect_1,'rect_1')
+
+# Rectangle 2
+rect_2_point_1 = geompy.MakeVertex(0, single_rect_height,0.0 )
+rect_2_point_2 = geompy.MakeVertex(wavelength*n_flutes_y, single_rect_height, 0.0 )
+rect_2_point_3 = geompy.MakeVertex(wavelength*n_flutes_y,single_rect_height*2, 0.0)
+rect_2_point_4 = geompy.MakeVertex(0, single_rect_height*2, 0.0 )
+
+rect_2_line_1 = geompy.MakeLineTwoPnt(rect_2_point_1,rect_2_point_2)
+rect_2_line_2 = geompy.MakeLineTwoPnt(rect_2_point_2,rect_2_point_3)
+rect_2_line_3 = geompy.MakeLineTwoPnt(rect_2_point_3,rect_2_point_4)
+rect_2_line_4 = geompy.MakeLineTwoPnt(rect_2_point_4,rect_2_point_1)
+
+rect_2 = geompy.MakeFaceWires([rect_2_line_1,rect_2_line_2,rect_2_line_3,rect_2_line_4],1)
+geompy.addToStudy(rect_2,'rect_2')
+
+
+# Rectangle 3
+rect_3_point_1 = geompy.MakeVertex(0, single_rect_height*2,0.0 )
+rect_3_point_2 = geompy.MakeVertex(wavelength*n_flutes_y, single_rect_height*2, 0.0 )
+rect_3_point_3 = geompy.MakeVertex(wavelength*n_flutes_y,single_rect_height*3, 0.0)
+rect_3_point_4 = geompy.MakeVertex(0, single_rect_height*3, 0.0 )
+
+rect_3_line_1 = geompy.MakeLineTwoPnt(rect_3_point_1,rect_3_point_2)
+rect_3_line_2 = geompy.MakeLineTwoPnt(rect_3_point_2,rect_3_point_3)
+rect_3_line_3 = geompy.MakeLineTwoPnt(rect_3_point_3,rect_3_point_4)
+rect_3_line_4 = geompy.MakeLineTwoPnt(rect_3_point_4,rect_3_point_1)
+
+rect_3 = geompy.MakeFaceWires([rect_3_line_1,rect_3_line_2,rect_3_line_3,rect_3_line_4],1)
+geompy.addToStudy(rect_3,'rect_3')
+
+
+# Rectangle 4
+rect_4_point_1 = geompy.MakeVertex(0, single_rect_height*3,0.0 )
+rect_4_point_2 = geompy.MakeVertex(wavelength*n_flutes_y, single_rect_height*3, 0.0 )
+rect_4_point_3 = geompy.MakeVertex(wavelength*n_flutes_y,single_rect_height*4, 0.0)
+rect_4_point_4 = geompy.MakeVertex(0, single_rect_height*4, 0.0 )
+
+rect_4_line_1 = geompy.MakeLineTwoPnt(rect_4_point_1,rect_4_point_2)
+rect_4_line_2 = geompy.MakeLineTwoPnt(rect_4_point_2,rect_4_point_3)
+rect_4_line_3 = geompy.MakeLineTwoPnt(rect_4_point_3,rect_4_point_4)
+rect_4_line_4 = geompy.MakeLineTwoPnt(rect_4_point_4,rect_4_point_1)
+
+rect_4 = geompy.MakeFaceWires([rect_4_line_1,rect_4_line_2,rect_4_line_3,rect_4_line_4],1)
+geompy.addToStudy(rect_4,'rect_4')
+
+
+# Rectangle 5
+rect_5_point_1 = geompy.MakeVertex(0, single_rect_height*4,0.0 )
+rect_5_point_2 = geompy.MakeVertex(wavelength*n_flutes_y, single_rect_height*4, 0.0 )
+rect_5_point_3 = geompy.MakeVertex(wavelength*n_flutes_y,single_rect_height*5, 0.0)
+rect_5_point_4 = geompy.MakeVertex(0, single_rect_height*5, 0.0 )
+
+rect_5_line_1 = geompy.MakeLineTwoPnt(rect_5_point_1,rect_5_point_2)
+rect_5_line_2 = geompy.MakeLineTwoPnt(rect_5_point_2,rect_5_point_3)
+rect_5_line_3 = geompy.MakeLineTwoPnt(rect_5_point_3,rect_5_point_4)
+rect_5_line_4 = geompy.MakeLineTwoPnt(rect_5_point_4,rect_5_point_1)
+
+rect_5 = geompy.MakeFaceWires([rect_5_line_1,rect_5_line_2,rect_5_line_3,rect_5_line_4],1)
+geompy.addToStudy(rect_5,'rect_5')
+
+
+#create the top liner and the bottom liner
+top_liner_point_1 = geompy.MakeVertex(0, flute_amplitude,0.0 )
+top_liner_point_2 = geompy.MakeVertex(wavelength*n_flutes_y, flute_amplitude, 0.0 )
+top_liner_point_3 = geompy.MakeVertex(wavelength*n_flutes_y, flute_amplitude+liner_thickness, 0.0)
+top_liner_point_4 = geompy.MakeVertex(0, flute_amplitude+liner_thickness, 0.0 )
+
+
+
+t_l_line_1 = geompy.MakeLineTwoPnt(top_liner_point_1,top_liner_point_2)
+t_l_line_2 = geompy.MakeLineTwoPnt(top_liner_point_2,top_liner_point_3)
+t_l_line_3 = geompy.MakeLineTwoPnt(top_liner_point_3,top_liner_point_4)
+t_l_line_4 = geompy.MakeLineTwoPnt(top_liner_point_4,top_liner_point_1)
+
+top_liner = geompy.MakeFaceWires([t_l_line_1,t_l_line_2,t_l_line_3,t_l_line_4],1)
+geompy.addToStudy(top_liner,'top_liner')
+
+# creating the bottom liner
+bottom_liner_point_1 = geompy.MakeVertex(0, y_cordinates[0], 0.0)
+bottom_liner_point_2 = geompy.MakeVertex(wavelength*n_flutes_y, y_cordinates[0], 0.0)
+bottom_liner_point_3 = geompy.MakeVertex(wavelength*n_flutes_y, y_cordinates[0]-liner_thickness, 0.0)
+bottom_liner_point_4 = geompy.MakeVertex(0, y_cordinates[0]-liner_thickness, 0.0)
+
+b_l_line_1 = geompy.MakeLineTwoPnt(bottom_liner_point_1,bottom_liner_point_2)
+b_l_line_2 = geompy.MakeLineTwoPnt(bottom_liner_point_2,bottom_liner_point_3)
+b_l_line_3 = geompy.MakeLineTwoPnt(bottom_liner_point_3,bottom_liner_point_4)
+b_l_line_4 = geompy.MakeLineTwoPnt(bottom_liner_point_4,bottom_liner_point_1)
+
+bottom_liner = geompy.MakeFaceWires([b_l_line_1,b_l_line_2,b_l_line_3,b_l_line_4],1)
+geompy.addToStudy(bottom_liner,'bottom_liner')
+
+
+
+
+# creating the groups for top and bottom liner and adding them to the study
+load_line = geompy.CreateGroup(top_liner, geompy.ShapeType["EDGE"])
+geompy.UnionIDs(load_line, [8])
+tl_contact = geompy.CreateGroup(top_liner, geompy.ShapeType["EDGE"])
+geompy.UnionIDs(tl_contact, [3])
+tl_full = geompy.CreateGroup(top_liner, geompy.ShapeType["FACE"])
+geompy.UnionIDs(tl_full, [1])
+tl_left_line = geompy.CreateGroup(top_liner, geompy.ShapeType["EDGE"])
+geompy.UnionIDs(tl_left_line, [10])
+
+tl_right_line = geompy.CreateGroup(top_liner, geompy.ShapeType["EDGE"])
+geompy.UnionIDs(tl_right_line, [6])
+
+
+geompy.addToStudyInFather( top_liner, load_line, 'load_line' )
+geompy.addToStudyInFather( top_liner, tl_contact, 'tl_contact' )
+geompy.addToStudyInFather( top_liner, tl_full, 'tl_full' )
+geompy.addToStudyInFather( top_liner, tl_left_line, 'tl_left_line' )
+geompy.addToStudyInFather( top_liner, tl_right_line, 'tl_right_line' )
+
+fixed_line = geompy.CreateGroup(bottom_liner,geompy.ShapeType["EDGE"])
+geompy.UnionIDs(fixed_line, [8])
+bl_contact = geompy.CreateGroup(bottom_liner,geompy.ShapeType["EDGE"])
+geompy.UnionIDs(bl_contact,[3])
+
+bl_full = geompy.CreateGroup(bottom_liner, geompy.ShapeType["FACE"])
+geompy.UnionIDs(bl_full, [1])
+
+bl_left_line = geompy.CreateGroup(bottom_liner, geompy.ShapeType["EDGE"])
+geompy.UnionIDs(bl_left_line, [10])
+
+
+
+geompy.addToStudyInFather( bottom_liner, fixed_line, 'fixed_line' )
+geompy.addToStudyInFather( bottom_liner, bl_contact, 'bl_contact' )
+geompy.addToStudyInFather( bottom_liner, bl_full, 'bl_full' )
+geompy.addToStudyInFather( bottom_liner, bl_left_line, 'bl_left_line' )
+
+
+# creating the geometry for the aluminium block for the study
+alu_block_point_3 = geompy.MakeVertex(wavelength*n_flutes_y, flute_amplitude+liner_thickness+alu_block_thickness, 0.0)
+alu_block_point_4 = geompy.MakeVertex(0, flute_amplitude+liner_thickness+alu_block_thickness, 0.0 )
+
+alu_block_line_1 = geompy.MakeLineTwoPnt(top_liner_point_4,top_liner_point_3)
+alu_block_line_2 = geompy.MakeLineTwoPnt(top_liner_point_3,alu_block_point_3)
+alu_block_line_3 = geompy.MakeLineTwoPnt(alu_block_point_3,alu_block_point_4)
+alu_block_line_4 = geompy.MakeLineTwoPnt(alu_block_point_4,top_liner_point_4)
+
+alu_block_face = geompy.MakeFaceWires([alu_block_line_1,alu_block_line_2,alu_block_line_3,alu_block_line_4],1)
+geompy.addToStudy(alu_block_face,'alu_block_face')
+
+
+# creating the groups for the it
+alu_block_load_line = geompy.CreateGroup(alu_block_face, geompy.ShapeType["EDGE"])
+geompy.UnionIDs(alu_block_load_line, [8])
+
+alu_block_bottom_line = geompy.CreateGroup(alu_block_face, geompy.ShapeType["EDGE"])
+geompy.UnionIDs(alu_block_bottom_line, [3])
+
+alu_block_right_line = geompy.CreateGroup(alu_block_face, geompy.ShapeType["EDGE"])
+geompy.UnionIDs(alu_block_right_line, [6])
+
+alu_block_left_line = geompy.CreateGroup(alu_block_face, geompy.ShapeType["EDGE"])
+geompy.UnionIDs(alu_block_left_line, [10])
+
+alu_block_full_face = geompy.CreateGroup(alu_block_face, geompy.ShapeType["FACE"])
+geompy.UnionIDs(alu_block_full_face, [1])
+
+geompy.addToStudyInFather(alu_block_face,alu_block_load_line,'alu_block_load_line')
+geompy.addToStudyInFather(alu_block_face,alu_block_bottom_line,'alu_block_bottom_line')
+geompy.addToStudyInFather(alu_block_face,alu_block_right_line,'alu_block_right_line')
+geompy.addToStudyInFather(alu_block_face,alu_block_left_line,'alu_block_left_line')
+geompy.addToStudyInFather(alu_block_face,alu_block_full_face,'alu_block_full_face')
+
+
+
+
+
+
+
+# creating the geometry for the aluminium block for the study
+alu_block_b_point_3 = geompy.MakeVertex(wavelength*n_flutes_y, y_cordinates[0]-liner_thickness-alu_block_thickness, 0.0)
+alu_block_b_point_4 = geompy.MakeVertex(0, y_cordinates[0]-liner_thickness-alu_block_thickness, 0.0)
+
+alu_block_b_line_1 = geompy.MakeLineTwoPnt(bottom_liner_point_4,bottom_liner_point_3)
+alu_block_b_line_2 = geompy.MakeLineTwoPnt(bottom_liner_point_3,alu_block_b_point_3)
+alu_block_b_line_3 = geompy.MakeLineTwoPnt(alu_block_b_point_3,alu_block_b_point_4)
+alu_block_b_line_4 = geompy.MakeLineTwoPnt(alu_block_b_point_4,bottom_liner_point_4)
+
+alu_block_b_face = geompy.MakeFaceWires([alu_block_b_line_1,alu_block_b_line_2,alu_block_b_line_3,alu_block_b_line_4],1)
+geompy.addToStudy(alu_block_b_face,'alu_block_b_face')
+
+
+alu_block_b_fixed_line = geompy.CreateGroup(alu_block_b_face, geompy.ShapeType["EDGE"])
+geompy.UnionIDs(alu_block_b_fixed_line, [8])
+
+alu_block_b_top_line = geompy.CreateGroup(alu_block_b_face, geompy.ShapeType["EDGE"])
+geompy.UnionIDs(alu_block_b_top_line, [3])
+
+alu_block_b_right_line = geompy.CreateGroup(alu_block_b_face, geompy.ShapeType["EDGE"])
+geompy.UnionIDs(alu_block_b_right_line, [6])
+
+alu_block_b_left_line = geompy.CreateGroup(alu_block_b_face, geompy.ShapeType["EDGE"])
+geompy.UnionIDs(alu_block_b_left_line, [10])
+
+alu_block_b_full_face = geompy.CreateGroup(alu_block_b_face, geompy.ShapeType["FACE"])
+geompy.UnionIDs(alu_block_b_full_face, [1])
+
+
+
+geompy.addToStudyInFather(alu_block_b_face,alu_block_b_fixed_line,'alu_block_b_fixed_line')
+geompy.addToStudyInFather(alu_block_b_face,alu_block_b_top_line,'alu_block_b_top_line')
+geompy.addToStudyInFather(alu_block_b_face,alu_block_b_right_line,'alu_block_b_right_line')
+geompy.addToStudyInFather(alu_block_b_face,alu_block_b_left_line,'alu_block_b_left_line')
+geompy.addToStudyInFather(alu_block_b_face,alu_block_b_full_face,'alu_block_b_full_face')
+
+
+
+
+
+
+
+###
+### SMESH component
+###
+
+import  SMESH, SALOMEDS
+from salome.smesh import smeshBuilder
+
+smesh = smeshBuilder.New()
+#smesh.SetEnablePublish( False ) # Set to False to avoid publish in study if not needed or in some particular situations:
+                                 # multiples meshes built in parallel, complex and numerous mesh edition (performance)
+
+flute_mesh = smesh.Mesh(flute)
+NETGEN_1D_2D = flute_mesh.Triangle(algo=smeshBuilder.NETGEN_1D2D)
+NETGEN_2D_Parameters_1 = NETGEN_1D_2D.Parameters()
+NETGEN_2D_Parameters_1.SetMaxSize( max_element_size )
+NETGEN_2D_Parameters_1.SetMinSize(min_element_size )
+NETGEN_2D_Parameters_1.SetSecondOrder( 0 )
+NETGEN_2D_Parameters_1.SetOptimize( 1 )
+NETGEN_2D_Parameters_1.SetFineness( 2 )
+NETGEN_2D_Parameters_1.SetChordalError( -1 )
+NETGEN_2D_Parameters_1.SetChordalErrorEnabled( 0 )
+NETGEN_2D_Parameters_1.SetUseSurfaceCurvature( 1 )
+NETGEN_2D_Parameters_1.SetFuseEdges( 1 )
+NETGEN_2D_Parameters_1.SetUseDelauney( 0 )
+NETGEN_2D_Parameters_1.SetQuadAllowed( 0 )
+NETGEN_2D_Parameters_1.SetLocalSizeOnShape(rect_1, max_curvature_element_size)
+NETGEN_2D_Parameters_1.SetLocalSizeOnShape(rect_2, average_element_size)
+NETGEN_2D_Parameters_1.SetLocalSizeOnShape(rect_3, min_curvature_element_size)
+NETGEN_2D_Parameters_1.SetLocalSizeOnShape(rect_4, average_element_size)
+NETGEN_2D_Parameters_1.SetLocalSizeOnShape(rect_5, max_curvature_element_size)
+NETGEN_2D_Parameters_1.SetWorstElemMeasure( 21956 )
+NETGEN_2D_Parameters_1.SetCheckChartBoundary( 1 )
+
+# groups for the edges
+full_top_contact_1 = flute_mesh.GroupOnGeom(full_top_contact,'full_top_contact',SMESH.EDGE)
+full_bottom_contact_1 = flute_mesh.GroupOnGeom(full_bottom_contact,'full_bottom_contact',SMESH.EDGE)
+extrm_side_edges_1 = flute_mesh.GroupOnGeom(extrm_side_edges,'extrm_side_edges',SMESH.EDGE)
+flute_all_1 = flute_mesh.GroupOnGeom(flute_all,'flute_all',SMESH.FACE)
+
+# groups for the nodes
+full_top_contact_2 = flute_mesh.GroupOnGeom(full_top_contact,'full_top_contact',SMESH.NODE)
+full_bottom_contact_2 = flute_mesh.GroupOnGeom(full_bottom_contact,'full_bottom_contact',SMESH.NODE)
+extrm_side_edges_2 = flute_mesh.GroupOnGeom(extrm_side_edges,'extrm_side_edges',SMESH.NODE)
+
+isDone = flute_mesh.Compute()
+
+
+## Set names of Mesh objects
+smesh.SetName(NETGEN_1D_2D.GetAlgorithm(), 'NETGEN 1D-2D')
+smesh.SetName(NETGEN_2D_Parameters_1, 'NETGEN 2D Parameters_1')
+smesh.SetName(flute_mesh.GetMesh(), 'flute_mesh')
+
+
+
+top_liner_mesh = smesh.Mesh(top_liner)
+Regular_1D_6 = top_liner_mesh.Segment()
+Number_of_Segments_1 = Regular_1D_6.NumberOfSegments(n_elements_thickness)
+Quadrangle_2D = top_liner_mesh.Quadrangle(algo=smeshBuilder.QUADRANGLE)
+
+# create the groups for the edges
+load_line_1 = top_liner_mesh.GroupOnGeom(load_line,'load_line',SMESH.EDGE)
+tl_contact_1 = top_liner_mesh.GroupOnGeom(tl_contact,'tl_contact',SMESH.EDGE)
+tl_full_1 = top_liner_mesh.GroupOnGeom(tl_full,'tl_full',SMESH.FACE)
+
+tl_left_line_1 = top_liner_mesh.GroupOnGeom(tl_left_line,'tl_left_line',SMESH.EDGE)
+tl_right_line_1 = top_liner_mesh.GroupOnGeom(tl_right_line,'tl_right_line',SMESH.EDGE)
+
+
+# Groups for the nodes
+load_line_2 = top_liner_mesh.GroupOnGeom(load_line,'load_line',SMESH.NODE)
+tl_contact_2 = top_liner_mesh.GroupOnGeom(tl_contact,'tl_contact',SMESH.NODE)
+
+
+
+#sub meshes
+Regular_1D_6_1 = top_liner_mesh.Segment(geom=tl_contact)
+Number_of_Segments_1_1 = Regular_1D_6_1.NumberOfSegments(n_elements_load_line)
+Regular_1D_6_2 = top_liner_mesh.Segment(geom=tl_left_line)
+Number_of_Segments_1_2 = Regular_1D_6_2.NumberOfSegments(n_elements_thickness)
+Regular_1D_6_3 = top_liner_mesh.Segment(geom=load_line)
+Number_of_Segments_1_3 = Regular_1D_6_3.NumberOfSegments(n_elements_load_line)
+isDone = top_liner_mesh.Compute()
+Sub_mesh_1_1 = Regular_1D_6_1.GetSubMesh()
+Sub_mesh_2_2 = Regular_1D_6_2.GetSubMesh()
+Sub_mesh_3_3 = Regular_1D_6_3.GetSubMesh()
+
+
+
+bottom_liner_mesh = smesh.Mesh(bottom_liner)
+
+Regular_1D_8 = bottom_liner_mesh.Segment()
+Number_of_Segments_2 = Regular_1D_8.NumberOfSegments(n_elements_thickness)
+Quadrangle_2D_2 = bottom_liner_mesh.Quadrangle(algo=smeshBuilder.QUADRANGLE)
+
+# groups for the edges
+fixed_line_1 = bottom_liner_mesh.GroupOnGeom(fixed_line,'fixed_line',SMESH.EDGE)
+bl_contact_1 = bottom_liner_mesh.GroupOnGeom(bl_contact,'bl_contact',SMESH.EDGE)
+bl_full_1 = bottom_liner_mesh.GroupOnGeom(bl_full,'bl_full',SMESH.FACE)
+
+
+#group for the nodes
+fixed_line_2 = bottom_liner_mesh.GroupOnGeom(fixed_line,'fixed_line',SMESH.NODE)
+bl_contact_2 = bottom_liner_mesh.GroupOnGeom(bl_contact,'bl_contact',SMESH.NODE)
+
+#Sub meshes
+Regular_1D_8_1 = bottom_liner_mesh.Segment(geom=bl_contact)
+Number_of_Segments_2_1 = Regular_1D_8_1.NumberOfSegments(n_elements_load_line)
+Regular_1D_8_2 = bottom_liner_mesh.Segment(geom=bl_left_line)
+Number_of_Segments_2_2 = Regular_1D_8_2.NumberOfSegments(n_elements_thickness)
+Regular_1D_8_3 = bottom_liner_mesh.Segment(geom=fixed_line)
+Number_of_Segments_2_3 = Regular_1D_8_3.NumberOfSegments(n_elements_load_line)
+
+
+isDone = bottom_liner_mesh.Compute()
+
+Sub_mesh_1_4 = Regular_1D_8_1.GetSubMesh()
+Sub_mesh_2_5 = Regular_1D_8_2.GetSubMesh()
+Sub_mesh_3_6 = Regular_1D_8_3.GetSubMesh()
+
+
+bottom_liner_mesh.Reorient2D(bottom_liner_mesh,[ 0, 0, 1 ],[ 0, 0, 0 ])
+
+
+##### Creating the mesh for the alu_block_face
+
+alu_block_face_mesh = smesh.Mesh(alu_block_face)
+
+Regular_1D_10 = alu_block_face_mesh.Segment()
+Number_of_Segments_10 = Regular_1D_10.NumberOfSegments(n_elements_thickness*2)
+Quadrangle_2D_10 = alu_block_face_mesh.Quadrangle(algo=smeshBuilder.QUADRANGLE)
+
+# groups for the edges
+alu_block_load_line_1 = alu_block_face_mesh.GroupOnGeom(alu_block_load_line,'alu_block_load_line',SMESH.EDGE)
+alu_block_bottom_line_1 = alu_block_face_mesh.GroupOnGeom(alu_block_bottom_line,'alu_block_bottom_line',SMESH.EDGE)
+alu_block_right_line_1 = alu_block_face_mesh.GroupOnGeom(alu_block_right_line,'alu_block_right_line',SMESH.EDGE)
+alu_block_left_line_1 = alu_block_face_mesh.GroupOnGeom(alu_block_left_line,'alu_block_left_line',SMESH.EDGE)
+alu_block_full_face_1 = alu_block_face_mesh.GroupOnGeom(alu_block_full_face,'alu_block_full_face',SMESH.FACE)
+
+
+
+
+
+
+
+#group for the nodes
+alu_block_load_line_2 = alu_block_face_mesh.GroupOnGeom(alu_block_load_line,'alu_block_load_line',SMESH.NODE)
+alu_block_bottom_line_2 = alu_block_face_mesh.GroupOnGeom(alu_block_bottom_line,'alu_block_bottom_line',SMESH.NODE)
+alu_block_right_line_2 = alu_block_face_mesh.GroupOnGeom(alu_block_right_line,'alu_block_right_line',SMESH.NODE)
+alu_block_left_line_2 = alu_block_face_mesh.GroupOnGeom(alu_block_left_line,'alu_block_left_line',SMESH.NODE)
+
+
+
+
+
+#Sub meshes
+Regular_1D_10_1 = alu_block_face_mesh.Segment(geom=alu_block_load_line)
+Number_of_Segments_10_1 = Regular_1D_10_1.NumberOfSegments(int(n_elements_load_line/2))
+Regular_1D_10_2 = alu_block_face_mesh.Segment(geom=alu_block_bottom_line)
+Number_of_Segments_10_2 = Regular_1D_10_2.NumberOfSegments(int(n_elements_load_line/2))
+Regular_1D_10_3 = alu_block_face_mesh.Segment(geom=alu_block_left_line)
+Number_of_Segments_10_3 = Regular_1D_10_3.NumberOfSegments(n_elements_thickness*2)
+
+
+isDone = alu_block_face_mesh.Compute()
+
+Sub_mesh_10_1 = Regular_1D_10_1.GetSubMesh()
+Sub_mesh_10_2 = Regular_1D_10_2.GetSubMesh()
+Sub_mesh_10_3 = Regular_1D_10_3.GetSubMesh()
+
+
+### creating the mesh for the alu_block_b_face
+alu_block_b_face_mesh = smesh.Mesh(alu_block_b_face)
+
+Regular_1D_11 = alu_block_b_face_mesh.Segment()
+Number_of_Segments_11 = Regular_1D_11.NumberOfSegments(n_elements_thickness*2)
+Quadrangle_2D_11 = alu_block_b_face_mesh.Quadrangle(algo=smeshBuilder.QUADRANGLE)
+
+# groups for the edges
+alu_block_b_fixed_line_1 = alu_block_b_face_mesh.GroupOnGeom(alu_block_b_fixed_line,'alu_block_b_fixed_line',SMESH.EDGE)
+alu_block_b_top_line_1 = alu_block_b_face_mesh.GroupOnGeom(alu_block_b_top_line,'alu_block_b_top_line',SMESH.EDGE)
+alu_block_b_right_line_1 = alu_block_b_face_mesh.GroupOnGeom(alu_block_b_right_line,'alu_block_b_right_line',SMESH.EDGE)
+alu_block_b_left_line_1 = alu_block_b_face_mesh.GroupOnGeom(alu_block_b_left_line,'alu_block_b_left_line',SMESH.EDGE)
+alu_block_b_full_face_1 = alu_block_b_face_mesh.GroupOnGeom(alu_block_b_full_face,'alu_block_b_full_face',SMESH.FACE)
+
+
+
+
+
+
+
+#group for the nodes
+alu_block_b_fixed_line_2 = alu_block_b_face_mesh.GroupOnGeom(alu_block_b_fixed_line,'alu_block_b_fixed_line',SMESH.NODE)
+alu_block_b_top_line_2 = alu_block_b_face_mesh.GroupOnGeom(alu_block_b_top_line,'alu_block_b_top_line',SMESH.NODE)
+alu_block_b_right_line_2 = alu_block_b_face_mesh.GroupOnGeom(alu_block_b_right_line,'alu_block_b_right_line',SMESH.NODE)
+alu_block_b_left_line_2 = alu_block_b_face_mesh.GroupOnGeom(alu_block_b_left_line,'alu_block_b_left_line',SMESH.NODE)
+
+
+
+
+
+#Sub meshes
+Regular_1D_11_1 = alu_block_b_face_mesh.Segment(geom=alu_block_b_fixed_line)
+Number_of_Segments_11_1 = Regular_1D_11_1.NumberOfSegments(int(n_elements_load_line/2))
+Regular_1D_11_2 = alu_block_b_face_mesh.Segment(geom=alu_block_b_top_line)
+Number_of_Segments_11_2 = Regular_1D_11_2.NumberOfSegments(int(n_elements_load_line/2))
+Regular_1D_11_3 = alu_block_b_face_mesh.Segment(geom=alu_block_b_left_line)
+Number_of_Segments_11_3 = Regular_1D_11_3.NumberOfSegments(n_elements_thickness*2)
+
+
+isDone = alu_block_b_face_mesh.Compute()
+
+Sub_mesh_11_1 = Regular_1D_11_1.GetSubMesh()
+Sub_mesh_11_2 = Regular_1D_11_2.GetSubMesh()
+Sub_mesh_11_3 = Regular_1D_11_3.GetSubMesh()
+
+
+
+alu_block_b_face_mesh.Reorient2D(alu_block_b_face_mesh,[ 0, 0, 1 ],[ 0, 0, 0 ])
+
+
+
+
+
+
+
+
+
+# create the final mesh
+Final_mesh = smesh.Concatenate( [ flute_mesh.GetMesh(), top_liner_mesh.GetMesh(), bottom_liner_mesh.GetMesh(),alu_block_face_mesh.GetMesh(),alu_block_b_face_mesh.GetMesh() ], 1, 1, 1e-05, False )
+[ full_top_contact_3, full_bottom_contact_3, extrm_side_edges_3, flute_all_2, full_top_contact_4, full_bottom_contact_4, extrm_side_edges_4, load_line_3, tl_contact_3, tl_full_2, tl_left_line_2, tl_right_line_2, load_line_4, tl_contact_4, fixed_line_3, bl_contact_3, bl_full_2, fixed_line_4, bl_contact_4, alu_block_load_line_3, alu_block_bottom_line_3, alu_block_right_line_3, alu_block_left_line_3, alu_block_full_face_2, alu_block_load_line_4, alu_block_bottom_line_4, alu_block_right_line_4, alu_block_left_line_4, alu_block_b_fixed_line_3, alu_block_b_top_line_3, alu_block_b_right_line_3, alu_block_b_left_line_3, alu_block_b_full_face_2, alu_block_b_fixed_line_4, alu_block_b_top_line_4, alu_block_b_right_line_4, alu_block_b_left_line_4 ] = Final_mesh.GetGroups()
+smesh.SetName(Final_mesh.GetMesh(), 'Final_mesh')
+
+
+aCriteria = []
+aCriterion = smesh.GetCriterion(SMESH.NODE,SMESH.FT_BelongToMeshGroup,SMESH.FT_Undefined,full_top_contact_4,SMESH.FT_Undefined,SMESH.FT_LogicalAND)
+aCriteria.append(aCriterion)
+aCriterion = smesh.GetCriterion(SMESH.NODE,SMESH.FT_BelongToMeshGroup,SMESH.FT_Undefined,tl_contact_4)
+aCriteria.append(aCriterion)
+aFilter_1 = smesh.GetFilterFromCriteria(aCriteria)
+aFilter_1.SetMesh(Final_mesh.GetMesh())
+common_nodes_tl = Final_mesh.GroupOnFilter( SMESH.NODE, 'common_nodes_tl', aFilter_1 )
+
+aCriteria = []
+aCriterion = smesh.GetCriterion(SMESH.NODE,SMESH.FT_BelongToMeshGroup,SMESH.FT_Undefined,full_bottom_contact_4,SMESH.FT_Undefined,SMESH.FT_LogicalAND)
+aCriteria.append(aCriterion)
+aCriterion = smesh.GetCriterion(SMESH.NODE,SMESH.FT_BelongToMeshGroup,SMESH.FT_Undefined,bl_contact_4)
+aCriteria.append(aCriterion)
+aFilter_2 = smesh.GetFilterFromCriteria(aCriteria)
+aFilter_2.SetMesh(Final_mesh.GetMesh())
+common_nodes_bl = Final_mesh.GroupOnFilter( SMESH.NODE, 'common_nodes_bl', aFilter_2 )
+
+
+
+#node1_to_merge = Final_mesh.FindNodeClosestTo(0,3.8273,0)
+#Final_mesh.MergeNodes([[ 82, 3434 ]], [], 0)
+
+max_y_liner_node_arg = np.argmax(new_y_cordinates)
+merge_single_elem_length = (x_cordinates[-1]*n_flutes_y)/(n_elements_load_line)
+merge_x_count = round(new_x_cordinates[max_y_liner_node_arg]/merge_single_elem_length)
+merge_x_length = merge_x_count*merge_single_elem_length
+
+iter_string = 'Iteration_'+str(index)
+current_dir = str(path_to_dir)+str('/')+str(iter_string)
+if not os.path.exists(current_dir):
+        os.makedirs(current_dir)
+
+
+try:
+        Final_mesh.ExportMED(current_dir+str('/Final_mesh.med'))
+        pass
+except:
+        raise Exception('Export to MED File failed')
+
+if common_nodes_tl.IsEmpty() :
+    print('Risk ! There are no common nodes in top liner')
+
+
+import sys,subprocess
+
+
+commString=f'''# orthotropic material properties for the paper;
+DEBUT(LANG='EN')
+
+# orthotropic material properties for the paper;
+EL = {E11}   #E11
+ET = {E33}   #E33
+EN = {E22}    #E22 
+
+NULN = {nu12}    #nu12
+NULT = {nu13}    #nu13
+NUTN = {nu32}    #nu32
+
+GLT = {G13}    #G13
+GLN = {G12}    #G12
+GTN = {G32}    #G32
+
+# Displacement
+disp = {disp}
+
+# penalisation coefficient
+coefficient = {coefficient}
+
+# maximum distance allowed for flute to penetarte in the liner
+max_dist = {max_dist}
+
+# aluminium block material properties
+E_alu = {E_alu}
+nu_alu = {nu_alu}
+
+mesh = LIRE_MAILLAGE(UNITE=20)
+
+mesh = MODI_MAILLAGE(reuse=mesh,
+                     MAILLAGE=mesh,
+                     ORIE_PEAU=(_F(GROUP_MA_PEAU=('full_top_contact', )),
+                                _F(GROUP_MA_PEAU=('full_bottom_contact', )),
+                                _F(GROUP_MA_PEAU=('tl_contact', )),
+                                _F(GROUP_MA_PEAU=('bl_contact', ))))
+
+model = AFFE_MODELE(AFFE=_F(MODELISATION='D_PLAN',
+                            PHENOMENE='MECANIQUE',
+                            TOUT='OUI'),
+                    MAILLAGE=mesh)
+
+orthotropic = DEFI_MATERIAU(ELAS_ORTH=_F(E_L=EL,
+                                         E_N=EN,
+                                         E_T=ET,
+                                         G_LN=GLN,
+                                         G_LT=GLT,
+                                         G_TN=GTN,
+                                         NU_LN=NULN,
+                                         NU_LT=NULT,
+                                         NU_TN=NUTN))
+
+alumn = DEFI_MATERIAU(ELAS=_F(E=E_alu,
+                              NU=nu_alu))
+
+fieldmat = AFFE_MATERIAU(AFFE=(_F(GROUP_MA=('flute_all', 'tl_full', 'bl_full'),
+                                  MATER=(orthotropic, )),
+                               _F(GROUP_MA=('alu_block_full_face', 'alu_block_b_full_face'),
+                                  MATER=(alumn, ))),
+                         MODELE=model)
+
+ramp = DEFI_FONCTION(NOM_PARA='INST',
+                     VALE=(0.0, 0.0, 1.0, 1.0))
+
+listr = DEFI_LIST_REEL(DEBUT=0.0,
+                       INTERVALLE=_F(JUSQU_A=1.0,
+                                     NOMBRE=100))
+
+times = DEFI_LIST_INST(DEFI_LIST=_F(LIST_INST=listr),
+                       ECHEC=(_F(EVENEMENT='ERREUR'),
+                              _F(EVENEMENT='INTERPENETRATION',
+                                 PENE_MAXI=max_dist)))
+
+bc = AFFE_CHAR_MECA(DDL_IMPO=(_F(DX=0.0,
+                                 DY=0.0,
+                                 GROUP_MA=('alu_block_b_fixed_line', )),
+                              _F(DX=0.0,
+                                 GROUP_MA=('extrm_side_edges', )),
+                              _F(DX=0.0,
+                                 GROUP_MA=('tl_left_line', 'tl_right_line'))),
+                    MODELE=model)
+
+load = AFFE_CHAR_MECA(DDL_IMPO=_F(DY=disp,
+                                  GROUP_MA=('alu_block_load_line', )),
+                      MODELE=model)
+
+contact = DEFI_CONTACT(MODELE=model,
+                       ZONE=(_F(ALGO_CONT='PENALISATION',
+                                E_N=coefficient,
+                                GROUP_MA_ESCL=('full_top_contact', ),
+                                GROUP_MA_MAIT=('tl_contact', ),
+                                SANS_GROUP_NO=('common_nodes_tl', )),
+                             _F(ALGO_CONT='PENALISATION',
+                                E_N=coefficient,
+                                GROUP_MA_ESCL=('full_bottom_contact', ),
+                                GROUP_MA_MAIT=('bl_contact', ),
+                                SANS_GROUP_NO=('common_nodes_bl', ))))
+
+resnonl = STAT_NON_LINE(CHAM_MATER=fieldmat,
+                        CONTACT=contact,
+                        CONVERGENCE=_F(ITER_GLOB_MAXI=50),
+                        EXCIT=(_F(CHARGE=bc),
+                               _F(CHARGE=load,
+                                  FONC_MULT=ramp)),
+                        INCREMENT=_F(LIST_INST=times),
+                        MODELE=model)
+
+resnonl = CALC_CHAMP(reuse=resnonl,
+                     CONTRAINTE=('SIGM_ELNO', ),
+                     CRITERES=('SIEQ_ELNO', ),
+                     DEFORMATION=('EPSI_ELNO', ),
+                     FORCE=('FORC_NODA', 'REAC_NODA'),
+                     RESULTAT=resnonl)
+
+tl_top_nodes = POST_RELEVE_T(ACTION=_F(GROUP_NO=('tl_contact', ),
+                                       INTITULE='Top_liner',
+                                       NOM_CHAM='FORC_NODA',
+                                       NOM_CMP=('DY', ),
+                                       OPERATION=('EXTRACTION', ),
+                                       RESULTAT=resnonl))
+
+bl_bottom_nodes = POST_RELEVE_T(ACTION=_F(GROUP_NO=('bl_contact', ),
+                                          INTITULE='bottom nodes',
+                                          NOM_CHAM='FORC_NODA',
+                                          NOM_CMP=('DY', ),
+                                          OPERATION=('EXTRACTION', ),
+                                          RESULTAT=resnonl))
+
+
+
+alu_bottom_nodes = POST_RELEVE_T(ACTION=_F(GROUP_NO=('alu_block_b_fixed_line', ),
+                                          INTITULE='bottom nodes',
+                                          NOM_CHAM='FORC_NODA',
+                                          NOM_CMP=('DY', ),
+                                          OPERATION=('EXTRACTION', ),
+                                          RESULTAT=resnonl))
+
+alu_top_nodes = POST_RELEVE_T(ACTION=_F(GROUP_NO=('alu_block_load_line', ),
+                                          INTITULE='top nodes',
+                                          NOM_CHAM='FORC_NODA',
+                                          NOM_CMP=('DY', ),
+                                          OPERATION=('EXTRACTION', ),
+                                          RESULTAT=resnonl))
+
+pressure_tl = POST_RELEVE_T(ACTION=_F(GROUP_NO=('tl_contact', ),
+                                      INTITULE='Pressure',
+                                      NOM_CHAM='SIGM_ELNO',
+                                      NOM_CMP=('SIYY', ),
+                                      OPERATION=('EXTRACTION', ),
+                                      RESULTAT=resnonl))
+
+pressure_bl = POST_RELEVE_T(ACTION=_F(GROUP_NO=('bl_contact', ),
+                                      INTITULE='Pressure',
+                                      NOM_CHAM='SIGM_ELNO',
+                                      NOM_CMP=('SIYY', ),
+                                      OPERATION=('EXTRACTION', ),
+                                      RESULTAT=resnonl))
+disp_full_top_cont = POST_RELEVE_T(ACTION=_F(GROUP_NO=('full_top_contact', ),
+                                             INTITULE='disp',
+                                             NOM_CHAM='DEPL',
+                                             NOM_CMP=('DX', 'DY'),
+                                             OPERATION=('EXTRACTION', ),
+                                             RESULTAT=resnonl))
+
+
+IMPR_RESU(RESU=_F(RESULTAT=resnonl),
+          UNITE=80)
+
+IMPR_TABLE(TABLE=tl_top_nodes,
+           UNITE=2)
+
+IMPR_TABLE(TABLE=bl_bottom_nodes,
+           UNITE=3)
+
+IMPR_TABLE(TABLE=alu_top_nodes,
+           UNITE=4)
+
+IMPR_TABLE(TABLE=alu_bottom_nodes,
+           UNITE=5)
+
+IMPR_TABLE(TABLE=pressure_tl,
+           UNITE=7)
+
+IMPR_TABLE(TABLE=pressure_bl,
+           UNITE=9)
+           
+IMPR_TABLE(TABLE=disp_full_top_cont,
+           UNITE=10)
+           
+FIN()'''
+
+commString2 = f'''# orthotropic material properties for the paper;
+DEBUT(LANG='EN')
+
+# orthotropic material properties for the paper;
+EL = {E11}   #E11
+ET = {E33}   #E33
+EN = {E22}    #E22 
+
+NULN = {nu12}    #nu12
+NULT = {nu13}    #nu13
+NUTN = {nu32}    #nu32
+
+GLT = {G13}    #G13
+GLN = {G12}    #G12
+GTN = {G32}    #G32
+
+# Displacement
+disp = {disp}
+
+# penalisation coefficient
+coefficient = {coefficient}
+
+# maximum distance allowed for flute to penetarte in the liner
+max_dist = {max_dist}
+
+# aluminium block material properties
+E_alu = {E_alu}
+nu_alu = {nu_alu}
+
+mesh = LIRE_MAILLAGE(UNITE=20)
+
+mesh = MODI_MAILLAGE(reuse=mesh,
+                     MAILLAGE=mesh,
+                     ORIE_PEAU=(_F(GROUP_MA_PEAU=('full_top_contact', )),
+                                _F(GROUP_MA_PEAU=('full_bottom_contact', )),
+                                _F(GROUP_MA_PEAU=('tl_contact', )),
+                                _F(GROUP_MA_PEAU=('bl_contact', ))))
+
+model = AFFE_MODELE(AFFE=_F(MODELISATION='D_PLAN',
+                            PHENOMENE='MECANIQUE',
+                            TOUT='OUI'),
+                    MAILLAGE=mesh)
+
+orthotropic = DEFI_MATERIAU(ELAS_ORTH=_F(E_L=EL,
+                                         E_N=EN,
+                                         E_T=ET,
+                                         G_LN=GLN,
+                                         G_LT=GLT,
+                                         G_TN=GTN,
+                                         NU_LN=NULN,
+                                         NU_LT=NULT,
+                                         NU_TN=NUTN))
+
+alumn = DEFI_MATERIAU(ELAS=_F(E=E_alu,
+                              NU=nu_alu))
+
+fieldmat = AFFE_MATERIAU(AFFE=(_F(GROUP_MA=('flute_all', 'tl_full', 'bl_full'),
+                                  MATER=(orthotropic, )),
+                               _F(GROUP_MA=('alu_block_full_face', 'alu_block_b_full_face'),
+                                  MATER=(alumn, ))),
+                         MODELE=model)
+
+ramp = DEFI_FONCTION(NOM_PARA='INST',
+                     VALE=(0.0, 0.0, 1.0, 1.0))
+
+listr = DEFI_LIST_REEL(DEBUT=0.0,
+                       INTERVALLE=_F(JUSQU_A=1.0,
+                                     NOMBRE=100))
+
+times = DEFI_LIST_INST(DEFI_LIST=_F(LIST_INST=listr),
+                       ECHEC=(_F(EVENEMENT='ERREUR'),
+                              _F(EVENEMENT='INTERPENETRATION',
+                                 PENE_MAXI=max_dist)))
+
+bc = AFFE_CHAR_MECA(DDL_IMPO=(_F(DX=0.0,
+                                 DY=0.0,
+                                 GROUP_MA=('alu_block_b_fixed_line', )),
+                              _F(DX=0.0,
+                                 GROUP_MA=('extrm_side_edges', )),
+                              _F(DX=0.0,
+                                 GROUP_MA=('tl_left_line', 'tl_right_line'))),
+                    MODELE=model)
+
+load = AFFE_CHAR_MECA(DDL_IMPO=_F(DY=disp,
+                                  GROUP_MA=('alu_block_load_line', )),
+                      MODELE=model)
+
+contact = DEFI_CONTACT(MODELE=model,
+                       ZONE=(_F(ALGO_CONT='PENALISATION',
+                                E_N=coefficient,
+                                GROUP_MA_ESCL=('full_top_contact', ),
+                                GROUP_MA_MAIT=('tl_contact', ),),
+                             _F(ALGO_CONT='PENALISATION',
+                                E_N=coefficient,
+                                GROUP_MA_ESCL=('full_bottom_contact', ),
+                                GROUP_MA_MAIT=('bl_contact', ),
+                                SANS_GROUP_NO=('common_nodes_bl', ))))
+
+resnonl = STAT_NON_LINE(CHAM_MATER=fieldmat,
+                        CONTACT=contact,
+                        CONVERGENCE=_F(ITER_GLOB_MAXI=50),
+                        EXCIT=(_F(CHARGE=bc),
+                               _F(CHARGE=load,
+                                  FONC_MULT=ramp)),
+                        INCREMENT=_F(LIST_INST=times),
+                        MODELE=model)
+
+resnonl = CALC_CHAMP(reuse=resnonl,
+                     CONTRAINTE=('SIGM_ELNO', ),
+                     CRITERES=('SIEQ_ELNO', ),
+                     DEFORMATION=('EPSI_ELNO', ),
+                     FORCE=('FORC_NODA', 'REAC_NODA'),
+                     RESULTAT=resnonl)
+
+tl_top_nodes = POST_RELEVE_T(ACTION=_F(GROUP_NO=('tl_contact', ),
+                                       INTITULE='Top_liner',
+                                       NOM_CHAM='FORC_NODA',
+                                       NOM_CMP=('DY', ),
+                                       OPERATION=('EXTRACTION', ),
+                                       RESULTAT=resnonl))
+
+bl_bottom_nodes = POST_RELEVE_T(ACTION=_F(GROUP_NO=('bl_contact', ),
+                                          INTITULE='bottom nodes',
+                                          NOM_CHAM='FORC_NODA',
+                                          NOM_CMP=('DY', ),
+                                          OPERATION=('EXTRACTION', ),
+                                          RESULTAT=resnonl))
+
+
+
+alu_bottom_nodes = POST_RELEVE_T(ACTION=_F(GROUP_NO=('alu_block_b_fixed_line', ),
+                                          INTITULE='bottom nodes',
+                                          NOM_CHAM='FORC_NODA',
+                                          NOM_CMP=('DY', ),
+                                          OPERATION=('EXTRACTION', ),
+                                          RESULTAT=resnonl))
+
+alu_top_nodes = POST_RELEVE_T(ACTION=_F(GROUP_NO=('alu_block_load_line', ),
+                                          INTITULE='top nodes',
+                                          NOM_CHAM='FORC_NODA',
+                                          NOM_CMP=('DY', ),
+                                          OPERATION=('EXTRACTION', ),
+                                          RESULTAT=resnonl))
+
+pressure_tl = POST_RELEVE_T(ACTION=_F(GROUP_NO=('tl_contact', ),
+                                      INTITULE='Pressure',
+                                      NOM_CHAM='SIGM_ELNO',
+                                      NOM_CMP=('SIYY', ),
+                                      OPERATION=('EXTRACTION', ),
+                                      RESULTAT=resnonl))
+
+pressure_bl = POST_RELEVE_T(ACTION=_F(GROUP_NO=('bl_contact', ),
+                                      INTITULE='Pressure',
+                                      NOM_CHAM='SIGM_ELNO',
+                                      NOM_CMP=('SIYY', ),
+                                      OPERATION=('EXTRACTION', ),
+                                      RESULTAT=resnonl))
+
+disp_full_top_cont = POST_RELEVE_T(ACTION=_F(GROUP_NO=('full_top_contact', ),
+                                             INTITULE='disp',
+                                             NOM_CHAM='DEPL',
+                                             NOM_CMP=('DX', 'DY'),
+                                             OPERATION=('EXTRACTION', ),
+                                             RESULTAT=resnonl))
+
+
+
+IMPR_RESU(RESU=_F(RESULTAT=resnonl),
+          UNITE=80)
+
+IMPR_TABLE(TABLE=tl_top_nodes,
+           UNITE=2)
+
+IMPR_TABLE(TABLE=bl_bottom_nodes,
+           UNITE=3)
+
+IMPR_TABLE(TABLE=alu_top_nodes,
+           UNITE=4)
+
+IMPR_TABLE(TABLE=alu_bottom_nodes,
+           UNITE=5)
+
+IMPR_TABLE(TABLE=pressure_tl,
+           UNITE=7)
+
+IMPR_TABLE(TABLE=pressure_bl,
+           UNITE=9)
+           
+IMPR_TABLE(TABLE=disp_full_top_cont,
+           UNITE=10)
+FIN()
+'''
+
+
+commFilePath = os.path.join(current_dir, "Study_command_file.comm")
+commFile = open(commFilePath,'w')
+
+if common_nodes_tl.IsEmpty() :
+    commFile.write(commString2)
+    commFile.close()
+else :
+    commFile.write(commString)
+    commFile.close()
+
+import shutil
+shutil.copy('/home/user/akram/export',current_dir)
+
+command_string = 'cd ' + current_dir +'; as_run export'
+command = command_string
+print(command)
+#ret = subprocess.run(command, capture_output=True, shell=True)
+
+# before Python 3.7:
+ret = subprocess.run(command, stdout=subprocess.PIPE, shell=True)
+
+print(ret.stdout.decode())
+]]></code></script>
+         <load container="DefaultContainer"/>
+         <inport name="path_to_dir" type="string"/>
+         <inport name="control_points_list" type="pyobj"/>
+         <inport name="weights_list" type="pyobj"/>
+         <inport name="amplitude" type="double"/>
+         <inport name="n_flutes_y" type="int"/>
+         <inport name="flute_thickness" type="double"/>
+         <inport name="liner_thickness" type="double"/>
+         <inport name="alu_block_thickness" type="double"/>
+         <inport name="index" type="int"/>
+         <inport name="E11" type="double"/>
+         <inport name="E22" type="double"/>
+         <inport name="E33" type="double"/>
+         <inport name="nu12" type="double"/>
+         <inport name="nu13" type="double"/>
+         <inport name="nu32" type="double"/>
+         <inport name="G13" type="double"/>
+         <inport name="G12" type="double"/>
+         <inport name="G32" type="double"/>
+         <inport name="disp" type="double"/>
+         <inport name="coefficient" type="double"/>
+         <inport name="max_dist" type="double"/>
+         <inport name="E_alu" type="double"/>
+         <inport name="nu_alu" type="double"/>
+      </inline>
+   </forloop>
+   <datanode name="Material_Properties">
+      <parameter name="E11" type="double">
+         <value><double>1709</double></value>
+      </parameter>
+      <parameter name="E22" type="double">
+         <value><double>918</double></value>
+      </parameter>
+      <parameter name="E33" type="double">
+         <value><double>8.9947</double></value>
+      </parameter>
+      <parameter name="nu12" type="double">
+         <value><double>0.3998</double></value>
+      </parameter>
+      <parameter name="nu13" type="double">
+         <value><double>0.001</double></value>
+      </parameter>
+      <parameter name="nu32" type="double">
+         <value><double>0.001</double></value>
+      </parameter>
+      <parameter name="G13" type="double">
+         <value><double>500</double></value>
+      </parameter>
+      <parameter name="G12" type="double">
+         <value><double>484.73</double></value>
+      </parameter>
+      <parameter name="G32" type="double">
+         <value><double>26.229</double></value>
+      </parameter>
+      <parameter name="disp" type="double">
+         <value><double>-2.5</double></value>
+      </parameter>
+      <parameter name="coefficient" type="double">
+         <value><double>50000</double></value>
+      </parameter>
+      <parameter name="max_dist" type="double">
+         <value><double>0.001</double></value>
+      </parameter>
+      <parameter name="E_alu" type="double">
+         <value><double>125000</double></value>
+      </parameter>
+      <parameter name="nu_alu" type="double">
+         <value><double>0.25</double></value>
+      </parameter>
+   </datanode>
+   <control> <fromnode>Geometry_and_mesh_parameters</fromnode> <tonode>Data_Check</tonode> </control>
+   <control> <fromnode>Geometry_and_mesh_parameters</fromnode> <tonode>Study_Iteration</tonode> </control>
+   <control> <fromnode>Data_Check</fromnode> <tonode>Study_Iteration</tonode> </control>
+   <control> <fromnode>Material_Properties</fromnode> <tonode>Study_Iteration</tonode> </control>
+   <datalink control="false">
+      <fromnode>Geometry_and_mesh_parameters</fromnode> <fromport>path_to_dir</fromport>
+      <tonode>Study_Iteration.Simulation_Run</tonode> <toport>path_to_dir</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Geometry_and_mesh_parameters</fromnode> <fromport>path_to_dir</fromport>
+      <tonode>Data_Check</tonode> <toport>path_to_dir</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Geometry_and_mesh_parameters</fromnode> <fromport>control_points</fromport>
+      <tonode>Study_Iteration.Simulation_Run</tonode> <toport>control_points_list</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Geometry_and_mesh_parameters</fromnode> <fromport>control_points</fromport>
+      <tonode>Data_Check</tonode> <toport>control_points</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Geometry_and_mesh_parameters</fromnode> <fromport>weights</fromport>
+      <tonode>Study_Iteration.Simulation_Run</tonode> <toport>weights_list</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Geometry_and_mesh_parameters</fromnode> <fromport>weights</fromport>
+      <tonode>Data_Check</tonode> <toport>weights</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Geometry_and_mesh_parameters</fromnode> <fromport>amplitude</fromport>
+      <tonode>Study_Iteration.Simulation_Run</tonode> <toport>amplitude</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Geometry_and_mesh_parameters</fromnode> <fromport>amplitude</fromport>
+      <tonode>Data_Check</tonode> <toport>amplitude</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Geometry_and_mesh_parameters</fromnode> <fromport>n_flutes_y</fromport>
+      <tonode>Study_Iteration.Simulation_Run</tonode> <toport>n_flutes_y</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Geometry_and_mesh_parameters</fromnode> <fromport>n_flutes_y</fromport>
+      <tonode>Data_Check</tonode> <toport>n_flutes_y</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Geometry_and_mesh_parameters</fromnode> <fromport>flute_thickness</fromport>
+      <tonode>Study_Iteration.Simulation_Run</tonode> <toport>flute_thickness</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Geometry_and_mesh_parameters</fromnode> <fromport>flute_thickness</fromport>
+      <tonode>Data_Check</tonode> <toport>flute_thickness</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Geometry_and_mesh_parameters</fromnode> <fromport>liner_thickness</fromport>
+      <tonode>Data_Check</tonode> <toport>liner_thickness</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Geometry_and_mesh_parameters</fromnode> <fromport>liner_thickness</fromport>
+      <tonode>Study_Iteration.Simulation_Run</tonode> <toport>liner_thickness</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Geometry_and_mesh_parameters</fromnode> <fromport>alu_block_thickness</fromport>
+      <tonode>Study_Iteration.Simulation_Run</tonode> <toport>alu_block_thickness</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Geometry_and_mesh_parameters</fromnode> <fromport>alu_block_thickness</fromport>
+      <tonode>Data_Check</tonode> <toport>alu_block_thickness</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Data_Check</fromnode> <fromport>n_iterations</fromport>
+      <tonode>Study_Iteration</tonode> <toport>nsteps</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Study_Iteration</fromnode> <fromport>index</fromport>
+      <tonode>Study_Iteration.Simulation_Run</tonode> <toport>index</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Material_Properties</fromnode> <fromport>E11</fromport>
+      <tonode>Study_Iteration.Simulation_Run</tonode> <toport>E11</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Material_Properties</fromnode> <fromport>E22</fromport>
+      <tonode>Study_Iteration.Simulation_Run</tonode> <toport>E22</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Material_Properties</fromnode> <fromport>E33</fromport>
+      <tonode>Study_Iteration.Simulation_Run</tonode> <toport>E33</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Material_Properties</fromnode> <fromport>nu12</fromport>
+      <tonode>Study_Iteration.Simulation_Run</tonode> <toport>nu12</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Material_Properties</fromnode> <fromport>nu13</fromport>
+      <tonode>Study_Iteration.Simulation_Run</tonode> <toport>nu13</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Material_Properties</fromnode> <fromport>nu32</fromport>
+      <tonode>Study_Iteration.Simulation_Run</tonode> <toport>nu32</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Material_Properties</fromnode> <fromport>G13</fromport>
+      <tonode>Study_Iteration.Simulation_Run</tonode> <toport>G13</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Material_Properties</fromnode> <fromport>G12</fromport>
+      <tonode>Study_Iteration.Simulation_Run</tonode> <toport>G12</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Material_Properties</fromnode> <fromport>G32</fromport>
+      <tonode>Study_Iteration.Simulation_Run</tonode> <toport>G32</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Material_Properties</fromnode> <fromport>disp</fromport>
+      <tonode>Study_Iteration.Simulation_Run</tonode> <toport>disp</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Material_Properties</fromnode> <fromport>coefficient</fromport>
+      <tonode>Study_Iteration.Simulation_Run</tonode> <toport>coefficient</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Material_Properties</fromnode> <fromport>max_dist</fromport>
+      <tonode>Study_Iteration.Simulation_Run</tonode> <toport>max_dist</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Material_Properties</fromnode> <fromport>E_alu</fromport>
+      <tonode>Study_Iteration.Simulation_Run</tonode> <toport>E_alu</toport>
+   </datalink>
+   <datalink control="false">
+      <fromnode>Material_Properties</fromnode> <fromport>nu_alu</fromport>
+      <tonode>Study_Iteration.Simulation_Run</tonode> <toport>nu_alu</toport>
+   </datalink>
+   <presentation name="Study_Iteration.Simulation_Run" x="112.6" y="74.4484" width="158" height="657" expanded="1" expx="112.6" expy="74.4484" expWidth="158" expHeight="657" shownState="0"/>
+   <presentation name="Data_Check" x="500.429" y="51.8931" width="158" height="252" expanded="1" expx="500.429" expy="51.8931" expWidth="158" expHeight="252" shownState="0"/>
+   <presentation name="Geometry_and_mesh_parameters" x="7" y="40.5" width="158" height="252" expanded="1" expx="7" expy="40.5" expWidth="158" expHeight="252" shownState="0"/>
+   <presentation name="Material_Properties" x="16.8764" y="649.342" width="158" height="414" expanded="1" expx="16.8764" expy="649.342" expWidth="158" expHeight="414" shownState="0"/>
+   <presentation name="Study_Iteration" x="1015.5" y="332.922" width="274.6" height="735.448" expanded="1" expx="1015.5" expy="332.922" expWidth="274.6" expHeight="735.448" shownState="0"/>
+   <presentation name="__ROOT__" x="0" y="0" width="1294.1" height="1072.37" expanded="1" expx="0" expy="0" expWidth="1294.1" expHeight="1072.37" shownState="0"/>
+</proc>
